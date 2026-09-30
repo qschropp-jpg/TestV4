@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>VR-Test – 5 Szenen</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;font-family:Arial,sans-serif}
+#ui{position:fixed;z-index:10;left:14px;top:14px;max-width:360px;padding:14px 16px;border-radius:12px;background:rgba(18,22,28,.92);color:white}
+#ui h1{font-size:18px;margin:0 0 8px}
+#ui p{font-size:14px;line-height:1.35;margin:7px 0}
+#vrStart{font:inherit;font-weight:700;padding:10px 15px;border:0;border-radius:9px;background:#55c96b;color:#07120a;cursor:pointer}
+#vrStart:disabled{opacity:.5}
+#sceneName{font-weight:700}
+#canvas{display:block;width:100%;height:100%}
+body.invr #ui{display:none}
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>VR-Test – Rundgang</h1>
+  <p id="support">WebXR wird geprüft …</p>
+  <p>Aktuelle Szene: <span id="sceneName">Gang 1</span></p>
+  <button id="vrStart" disabled>VR starten</button>
+  <p>In VR: mit dem Kopf umsehen, Controller-Laser auf einen Pfeil richten und Trigger drücken.</p>
+</div>
+<canvas id="canvas"></canvas>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
+import { VRButton } from "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/webxr/VRButton.js";
+
+const SCENES = {"60-cafeteria": {"name": "Cafeteria", "file": "images/cafeteria.jpg", "links": [{"target": "63-gang-3", "yaw": -1.081862908231054, "pitch": 0.1922680986940115}, {"target": "62-gang-2", "yaw": 2.7468070038184482, "pitch": 0.18697606695731217}]}, "61-gang-1": {"name": "Gang 1", "file": "images/gang1.jpg", "links": [{"target": "62-gang-2", "yaw": -0.06360837959993049, "pitch": 0.20372187330294977}]}, "62-gang-2": {"name": "Gang 2", "file": "images/gang2.jpg", "links": [{"target": "60-cafeteria", "yaw": 0.08520187414737812, "pitch": 0.18874377290294042}, {"target": "61-gang-1", "yaw": -3.0681519233871146, "pitch": 0.10612790005781925}]}, "63-gang-3": {"name": "Gang 3", "file": "images/gang3.jpg", "links": [{"target": "64-gang-4", "yaw": 0.006591711400277589, "pitch": 0.19176035118892898}, {"target": "60-cafeteria", "yaw": 2.8609941081235775, "pitch": 0.24303673070207665}]}, "64-gang-4": {"name": "Gang 4", "file": "images/gang4.jpg", "links": [{"target": "63-gang-3", "yaw": -2.6890631092609247, "pitch": 0.28698254189573014}]}};
+let currentSceneId = "61-gang-1";
+
+const canvas = document.getElementById("canvas");
+const support = document.getElementById("support");
+const sceneName = document.getElementById("sceneName");
+const vrStart = document.getElementById("vrStart");
+
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.xr.enabled = true;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75,1,0.1,1100);
+camera.position.set(0,0,0);
+
+const panoramaGeometry = new THREE.SphereGeometry(100,96,64);
+panoramaGeometry.scale(-1,1,1);
+const panoramaMaterial = new THREE.MeshBasicMaterial({color:0xffffff});
+const panorama = new THREE.Mesh(panoramaGeometry, panoramaMaterial);
+scene.add(panorama);
+
+const hotspotGroup = new THREE.Group();
+scene.add(hotspotGroup);
+
+const loader = new THREE.TextureLoader();
+const textureCache = new Map();
+
+function makeArrowTexture(color="#ffffff"){
+  const c=document.createElement("canvas");
+  c.width=256;c.height=256;
+  const x=c.getContext("2d");
+  x.clearRect(0,0,256,256);
+  x.beginPath();
+  x.arc(128,128,92,0,Math.PI*2);
+  x.fillStyle="rgba(0,0,0,.48)";
+  x.fill();
+  x.lineWidth=10;
+  x.strokeStyle=color;
+  x.stroke();
+  x.beginPath();
+  x.moveTo(128,54); x.lineTo(194,132); x.lineTo(155,132);
+  x.lineTo(155,192); x.lineTo(101,192); x.lineTo(101,132); x.lineTo(62,132);
+  x.closePath();
+  x.fillStyle=color;
+  x.fill();
+  const t=new THREE.CanvasTexture(c);
+  t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+const arrowTex = makeArrowTexture("#ffffff");
+const arrowHoverTex = makeArrowTexture("#55ff88");
+
+function sphericalPosition(yaw,pitch,r=7.5){
+  const cp=Math.cos(pitch);
+  return new THREE.Vector3(
+    r*cp*Math.sin(yaw),
+    r*Math.sin(pitch),
+    -r*cp*Math.cos(yaw)
+  );
+}
+
+function clearHotspots(){
+  while(hotspotGroup.children.length){
+    hotspotGroup.remove(hotspotGroup.children[0]);
+  }
+}
+
+function buildHotspots(){
+  clearHotspots();
+  const s=SCENES[currentSceneId];
+  for(const link of s.links){
+    const mat=new THREE.SpriteMaterial({
+      map:arrowTex, transparent:true, depthTest:false, depthWrite:false
+    });
+    const sprite=new THREE.Sprite(mat);
+    sprite.position.copy(sphericalPosition(link.yaw,link.pitch));
+    sprite.scale.set(1.2,1.2,1.2);
+    sprite.userData.target=link.target;
+    sprite.userData.isHotspot=true;
+    hotspotGroup.add(sprite);
+  }
+}
+
+async function getTexture(url){
+  if(textureCache.has(url)) return textureCache.get(url);
+  const t=await loader.loadAsync(url);
+  t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=THREE.ClampToEdgeWrapping;
+  t.wrapT=THREE.ClampToEdgeWrapping;
+  textureCache.set(url,t);
+  return t;
+}
+
+async function switchScene(id){
+  if(!SCENES[id]) return;
+  currentSceneId=id;
+  const s=SCENES[id];
+  sceneName.textContent=s.name;
+  panorama.material.map=await getTexture(s.file);
+  panorama.material.needsUpdate=true;
+  buildHotspots();
+}
+
+await switchScene(currentSceneId);
+
+function resize(){
+  const w=innerWidth,h=innerHeight;
+  renderer.setSize(w,h,false);
+  camera.aspect=w/h;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize",resize); resize();
+
+const raycaster=new THREE.Raycaster();
+const tempMatrix=new THREE.Matrix4();
+let hovered=null;
+
+function setHovered(obj){
+  if(hovered===obj) return;
+  if(hovered) hovered.material.map=arrowTex;
+  hovered=obj;
+  if(hovered) hovered.material.map=arrowHoverTex;
+}
+
+function setupController(index){
+  const controller=renderer.xr.getController(index);
+  scene.add(controller);
+
+  const lineGeom=new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)
+  ]);
+  const line=new THREE.Line(lineGeom,new THREE.LineBasicMaterial({color:0x55ff88}));
+  line.name="laser";
+  line.scale.z=8;
+  controller.add(line);
+
+  controller.addEventListener("select",()=>{
+    tempMatrix.identity().extractRotation(controller.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0,0,-1).applyMatrix4(tempMatrix);
+    const hits=raycaster.intersectObjects(hotspotGroup.children,false);
+    if(hits.length) switchScene(hits[0].object.userData.target);
+  });
+  return controller;
+}
+const controllers=[setupController(0),setupController(1)];
+
+const mouse=new THREE.Vector2();
+canvas.addEventListener("pointerdown",(e)=>{
+  mouse.x=(e.clientX/innerWidth)*2-1;
+  mouse.y=-(e.clientY/innerHeight)*2+1;
+  raycaster.setFromCamera(mouse,camera);
+  const hits=raycaster.intersectObjects(hotspotGroup.children,false);
+  if(hits.length) switchScene(hits[0].object.userData.target);
+});
+
+let vrButton;
+if(navigator.xr){
+  try{
+    const ok=await navigator.xr.isSessionSupported("immersive-vr");
+    if(ok){
+      support.textContent="Immersive VR wird unterstützt.";
+      vrStart.disabled=false;
+      vrButton=VRButton.createButton(renderer,{optionalFeatures:["local-floor","bounded-floor"]});
+      vrButton.style.display="none";
+      document.body.appendChild(vrButton);
+      vrStart.addEventListener("click",()=>vrButton.click());
+    } else {
+      support.textContent="Dieser Browser meldet keine Unterstützung für immersive VR.";
+    }
+  } catch(e) {
+    support.textContent="WebXR-Prüfung fehlgeschlagen: "+e.message;
+  }
+} else {
+  support.textContent="WebXR ist in diesem Browser nicht verfügbar.";
+}
+
+renderer.xr.addEventListener("sessionstart",()=>document.body.classList.add("invr"));
+renderer.xr.addEventListener("sessionend",()=>document.body.classList.remove("invr"));
+
+renderer.setAnimationLoop(()=>{
+  if(renderer.xr.isPresenting){
+    let best=null;
+    for(const controller of controllers){
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0,0,-1).applyMatrix4(tempMatrix);
+      const hits=raycaster.intersectObjects(hotspotGroup.children,false);
+      if(hits.length){ best=hits[0].object; break; }
+    }
+    setHovered(best);
+  }
+  renderer.render(scene,camera);
+});
+</script>
+</body>
+</html>
